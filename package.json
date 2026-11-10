@@ -1,6 +1,6 @@
 {
   "name": "@nxlabscc/agent-context",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "What an LLM agent's context holds beyond its persona, as a swappable strategy: blocks at session open, blocks per turn, what of the history travels, compaction inside a long turn. Bun, TypeScript source.",
   "type": "module",
   "license": "Apache-2.0",

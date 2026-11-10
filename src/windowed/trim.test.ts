@@ -120,3 +120,60 @@ test("an exhausted FIFO space divides by nothing: it presses and reports", async
   expect(report.space).toBe(0);
   expect(report.pressure).toBe(true);
 });
+
+/** One turn a call: a 2,000-char message and a 6,000-char answer, about 2k tokens. */
+function growBy(history: StoredMessage[], idx: { n: number }) {
+  history.push({ idx: idx.n++, message: { role: "user", content: "u".repeat(2_000) } });
+  history.push({ idx: idx.n++, message: { role: "assistant", content: "a".repeat(6_000) } });
+}
+
+const nextTurn: ModelMessage[] = [{ role: "user", content: "next" }];
+
+test("hysteresis: after a trim the window climbs back to high before the next cut", async () => {
+  // One long-lived builder: the process-local memory of the last cut carries
+  // across calls, so the conversation grows from `low` to `high` between trims
+  // instead of being re-cut to `low` every turn.
+  const builder = trimWindow({ floor: (req) => req.history.at(-1)?.idx ?? -1 });
+  const history: StoredMessage[] = [];
+  const idx = { n: 1 };
+  const firsts: Array<number | undefined> = [];
+  for (let t = 1; t <= 10; t++) {
+    growBy(history, idx);
+    const { history: sent } = await builder.prepareMessages!({
+      scope: { tenantId: "t" }, sessionId: "S", conversationId: null, agent: "a", system: "", query: "",
+      history: [...history], fresh: nextTurn, window: WINDOW, toolTokens: 0,
+    });
+    firsts.push(sent[0]?.idx);
+  }
+  // space*high = 7,000, space*low = 2,500. Untouched until it passes high (idx 1
+  // through turn 3), one trim at turn 4 to idx 7, then that cut holds across the
+  // climb (turns 5 and 6), the next trim at turn 7, and so on.
+  expect(firsts).toEqual([1, 1, 1, 7, 7, 7, 13, 13, 13, 19]);
+});
+
+test("a wired cut memory survives a new builder, as an ephemeral run needs", async () => {
+  // A fresh builder every turn, as a process that lives one turn: the only thing
+  // that carries the last cut over is the wired store, standing in for a mark the
+  // harness persists. With it, the hysteresis holds across the restarts.
+  const store = new Map<string, number>();
+  const make = () =>
+    trimWindow({
+      floor: (req) => req.history.at(-1)?.idx ?? -1,
+      cut: {
+        load: (req) => store.get(req.sessionId) ?? null,
+        save: (req, i) => void store.set(req.sessionId, i),
+      },
+    });
+  const history: StoredMessage[] = [];
+  const idx = { n: 1 };
+  const firsts: Array<number | undefined> = [];
+  for (let t = 1; t <= 7; t++) {
+    growBy(history, idx);
+    const { history: sent } = await make().prepareMessages!({
+      scope: { tenantId: "t" }, sessionId: "S", conversationId: null, agent: "a", system: "", query: "",
+      history: [...history], fresh: nextTurn, window: WINDOW, toolTokens: 0,
+    });
+    firsts.push(sent[0]?.idx);
+  }
+  expect(firsts).toEqual([1, 1, 1, 7, 7, 7, 13]);
+});
